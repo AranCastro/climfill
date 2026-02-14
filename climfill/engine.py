@@ -7,6 +7,12 @@ import pandas as pd
 from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import cross_val_score
+try:
+    from xgboost import XGBRegressor
+    HAS_XGBOOST = True
+except ImportError:
+    XGBRegressor = None
+    HAS_XGBOOST = False
 import warnings
 
 warnings.filterwarnings("ignore")
