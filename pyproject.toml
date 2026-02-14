@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "climfill"
+version = "1.0.0"
+description = "Automated Climate Station Data Gap-Filler using ML and Reanalysis Data"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [{name = "Aran"}]
+keywords = ["climate", "gap-filling", "time-series", "meteorology", "reanalysis", "machine-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+dependencies = [
+    "numpy>=1.21.0",
+    "pandas>=1.4.0",
+    "scipy>=1.7.0",
+    "scikit-learn>=1.0.0",
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+ml = ["xgboost>=1.7.0"]
+app = ["streamlit>=1.28.0", "plotly>=5.10.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+all = ["climfill[ml,app,dev]"]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/climfill"
+Issues = "https://github.com/yourusername/climfill/issues"
+
+[project.scripts]
+climfill = "climfill.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["climfill*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=climfill --cov-report=term-missing"
