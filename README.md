@@ -72,15 +72,7 @@ streamlit run streamlit_app.py
 ## Citation
 
 ```bibtex
-@software{climfill2026,
-  author    = {Castro, Aran},
-  title     = {ClimFill: Automated Climate Station Data Gap-Filler},
-  year      = {2026},
-  version   = {1.0.0},
-  publisher = {GitHub},
-  url       = {https://github.com/dr-aran-castro/climfill}
-}
-```
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18638725.svg)](https://doi.org/10.5281/zenodo.18638725)
 
 ## Contributing
 
