@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "ClimFill: Automated Climate Station Data Gap-Filler"
+type: software
+authors:
+  - family-names: Castro
+    given-names: Aran
+    orcid: "https://orcid.org/0000-0001-8038-606X"
+    affiliation: "Geospatial Campus, Nagercoil, India"
+version: "1.0.1"
+doi: "10.5281/zenodo.18638725"
+date-released: "2026-02-14"
+license: MIT
+repository-code: "https://github.com/AranCastro/climfill"
+url: "https://doi.org/10.5281/zenodo.18638725"
+keywords:
+  - climate
+  - meteorology
+  - gap-filling
+  - time-series
+  - machine-learning
+  - random-forest
+  - xgboost
+  - reanalysis
