@@ -1,47 +1,68 @@
 ---
-title: 'ClimFill: An Open-Source Tool for Automated Gap-Filling in Climate Station Time Series'
+title: "ClimFill: An Open-Source Tool for Automated Gap-Filling in Climate Station Time Series"
 tags:
   - Python
   - climate science
   - gap-filling
-  - time series
-  - machine learning
+  - time-series
+  - machine-learning
   - reanalysis
 authors:
-  - name: Aran
-    orcid: 0000-0000-0000-0000
+  - name: Aran Castro
+    orcid: 0000-0001-8038-606X
     affiliation: 1
 affiliations:
-  - name: Department of Earth Sciences, [University Name]
+  - name: Geospatial Campus, Nagercoil, India
     index: 1
-date: 2025
+date: 2026-02-14
 bibliography: paper.bib
 ---
 
 # Summary
 
-Gaps in climate station time series—caused by sensor failures, power outages, and maintenance—are a persistent challenge for Earth scientists. `ClimFill` is a free, open-source Python tool that automates detection, filling, and quality-flagging of missing data using a cascade of statistical methods, machine learning, and reanalysis data integration with built-in uncertainty quantification.
+Missing observations in climate station time series are common due to sensor malfunction, power interruptions, and maintenance gaps. These discontinuities reduce the reliability of downstream analyses in hydrology, climatology, agriculture, and environmental modelling. *ClimFill* is an open-source Python package that automates detection, reconstruction, and quality-flagging of missing values in meteorological time series using statistical interpolation, machine learning, and optional reanalysis data integration with uncertainty estimation.
 
 # Statement of Need
 
-Climate time series are foundational to hydrology, agriculture, ecology, and climate research. Yet 30–50% of stations in developing regions have significant gaps [@Hunziker2017]. Current solutions are either too simplistic (linear interpolation), require programming expertise [@vanBuuren2011; @Stekhoven2012], or are prohibitively expensive. `ClimFill` bridges this gap with an accessible tool (web + CLI + Python API) that is scientifically rigorous and practically free.
+Climate time series underpin water resource assessments, drought analysis, crop modelling, and climate variability studies. However, many observational datasets contain non-random gaps that compromise statistical robustness and bias trend analysis. Existing gap-filling approaches range from simple interpolation to advanced imputation frameworks [@vanBuuren2011; @Stekhoven2012], yet these often require custom scripting or lack integrated uncertainty assessment. Additionally, bias-corrected reanalysis integration workflows are typically implemented manually.
 
-# Methodology
+*ClimFill* provides an integrated, reproducible, and automated framework accessible through a command-line interface, Python API, and web interface. The package is intended for researchers and practitioners who require transparent, method-aware, and quality-controlled reconstruction of climate station datasets.
 
-`ClimFill` implements a hierarchical strategy:
+# Functionality
 
-1. **Gap Detection**: Identifies missing values including sentinel codes (-999, -9999), characterizes gap lengths, and flags outliers.
-2. **Multi-Method Filling**: Linear interpolation (1–3 records), cubic spline (4–7), seasonal decomposition (8–30), and Random Forest/XGBoost regression for longer gaps using correlated variables and cyclical temporal features.
-3. **Reanalysis Integration**: Auto-downloads gridded data from Open-Meteo (free) or ERA5 [@Hersbach2020], with quantile mapping bias correction [@Maraun2016].
-4. **Uncertainty Quantification**: Bootstrap resampling generates 95% confidence intervals for each filled value.
-5. **Quality Flagging**: Every value tagged as Original (`O`), Filled (`F`), or Suspicious (`S`) with method name and confidence score.
+ClimFill implements a hierarchical filling strategy:
 
-# Validation
+1. **Gap Detection**  
+   Automatically detects missing values including common sentinel codes (e.g., -999, -9999), quantifies gap lengths, evaluates temporal regularity, and identifies statistical outliers.
 
-Testing on synthetic 5-year daily data (8 variables, ~14% missing) achieved 99.6–100% fill rates with mean CI widths of ±0.63°C (temperature), ±3.47mm (precipitation), and ±0.31hPa (pressure).
+2. **Adaptive Gap-Filling Methods**  
+   - Short gaps: linear interpolation  
+   - Medium gaps: cubic spline interpolation  
+   - Seasonal gaps: decomposition-based reconstruction  
+   - Long gaps: Random Forest or XGBoost regression using correlated variables and cyclical temporal predictors  
 
-# Acknowledgements
+3. **Reanalysis Integration**  
+   Optional retrieval of gridded reanalysis data (e.g., ERA5 [@Hersbach2020]) via Open-Meteo API with quantile mapping bias correction [@Maraun2016].
 
-Built for the Earth Sciences community.
+4. **Uncertainty Quantification**  
+   Bootstrap resampling provides confidence intervals for reconstructed values.
 
-# References
+5. **Quality Flagging**  
+   Each observation is labelled as Original, Filled, or Suspicious, with associated method metadata.
+
+# Quality Control
+
+The package includes 60+ automated unit tests executed through continuous integration (GitHub Actions). Test coverage exceeds 90%, ensuring robustness across edge cases including irregular temporal spacing, short time series, and machine learning fallback scenarios.
+
+# Availability and Installation
+
+Source code is available at:  
+https://github.com/AranCastro/climfill  
+
+Archived release (v1.0.1):  
+https://doi.org/10.5281/zenodo.18638725  
+
+Installation:
+
+```bash
+pip install -e .
