@@ -1,0 +1,13 @@
+# Accent colours per theme; leaving [theme] unset keeps the light/dark
+# choice following the viewer's system setting.
+[theme.light]
+primaryColor = "#1F7A70"
+
+[theme.dark]
+primaryColor = "#2A9D8F"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
