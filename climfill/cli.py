@@ -11,9 +11,6 @@ import argparse
 import sys
 import json
 
-import pandas as pd
-import numpy as np
-
 from .engine import ClimFillEngine
 
 
@@ -31,7 +28,11 @@ def main():
     )
     parser.add_argument("--lat", type=float, default=None)
     parser.add_argument("--lon", type=float, default=None)
-    parser.add_argument("--reanalysis", action="store_true")
+    parser.add_argument(
+        "--reanalysis",
+        action="store_true",
+        help="Download Open-Meteo reanalysis (requires --lat and --lon)",
+    )
     parser.add_argument("--uncertainty", action="store_true")
     parser.add_argument("--bootstrap-n", type=int, default=50)
     parser.add_argument("--no-flags", action="store_true")
@@ -39,6 +40,8 @@ def main():
     parser.add_argument("--quiet", action="store_true")
 
     args = parser.parse_args()
+    if args.reanalysis and (args.lat is None or args.lon is None):
+        parser.error("--reanalysis requires --lat and --lon")
 
     def log(msg):
         if not args.quiet:
@@ -72,10 +75,11 @@ def main():
         sys.exit(0)
 
     # Reanalysis
+    reanalysis_map = {}
     if args.reanalysis and args.lat is not None and args.lon is not None:
         log(f"\n🌐 Downloading reanalysis for ({args.lat}, {args.lon})...")
         try:
-            from .reanalysis import get_open_meteo_data
+            from .reanalysis import get_open_meteo_data, suggest_reanalysis_mapping
 
             dates = engine.df[engine.date_col]
             rean = get_open_meteo_data(
@@ -84,18 +88,19 @@ def main():
                 start_date=dates.min().strftime("%Y-%m-%d"),
                 end_date=dates.max().strftime("%Y-%m-%d"),
             )
-            engine.df["_merge_date"] = engine.df[engine.date_col].dt.date
-            rean["_merge_date"] = rean["date"].dt.date
-            merged = engine.df.merge(rean, on="_merge_date", how="left")
-            merged = merged.drop(columns=["_merge_date", "date"], errors="ignore")
-            engine.df = merged
+            rean_cols = engine.merge_reanalysis(rean)
+            reanalysis_map = suggest_reanalysis_mapping(
+                engine.station_columns(), rean_cols
+            )
             log(f"   Downloaded {len(rean)} days")
+            for col, rcol in reanalysis_map.items():
+                log(f"   {col} ← {rcol}")
         except Exception as e:
             log(f"   ⚠️ Failed: {e}. Continuing without reanalysis.")
 
     # Fill
     log(f"\n🔧 Filling gaps ({args.method})...")
-    engine.fill_gaps(method=args.method)
+    engine.fill_gaps(method=args.method, reanalysis_map=reanalysis_map)
 
     # Uncertainty
     if args.uncertainty:

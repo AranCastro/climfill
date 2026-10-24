@@ -7,21 +7,22 @@ import pandas as pd
 from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import cross_val_score
+import warnings
+
 try:
     from xgboost import XGBRegressor
     HAS_XGBOOST = True
 except ImportError:
     XGBRegressor = None
     HAS_XGBOOST = False
-import warnings
 
 warnings.filterwarnings("ignore")
 
-try:
-    from xgboost import XGBRegressor
-    HAS_XGBOOST = True
-except ImportError:
-    HAS_XGBOOST = False
+REANALYSIS_PREFIX = "reanalysis_"
+
+
+def _is_reanalysis(col):
+    return str(col).startswith(REANALYSIS_PREFIX)
 
 
 class GapDetector:
@@ -40,7 +41,12 @@ class GapDetector:
             self.df[self.date_col] = pd.to_datetime(self.df[self.date_col])
             return self.date_col
 
-        for col in self.df.columns:
+        # Numeric columns parse as epoch offsets, so try text columns first
+        candidates = [
+            c for c in self.df.columns
+            if not pd.api.types.is_numeric_dtype(self.df[c])
+        ] or list(self.df.columns)
+        for col in candidates:
             try:
                 parsed = pd.to_datetime(self.df[col], format="mixed")
                 if parsed.notna().sum() > len(self.df) * 0.8:
@@ -76,19 +82,28 @@ class GapDetector:
         outliers = {}
         for col in columns:
             series = self.df[col].dropna()
+            # Zero-inflated variables (e.g. daily precipitation) are screened
+            # on their non-zero values; fences on all values would flag
+            # nearly every wet day
+            if (series == 0).mean() >= 0.25:
+                series = series[series != 0]
             if len(series) < 10:
                 continue
 
+            mask = pd.Series(False, index=self.df.index)
             if method == "iqr":
                 q1 = series.quantile(0.25)
                 q3 = series.quantile(0.75)
                 iqr = q3 - q1
+                if iqr == 0:
+                    continue
                 lower = q1 - threshold * iqr
                 upper = q3 + threshold * iqr
-                mask = (self.df[col] < lower) | (self.df[col] > upper)
+                mask.loc[series.index] = (series < lower) | (series > upper)
             elif method == "zscore":
+                if series.std() == 0:
+                    continue
                 z = np.abs(stats.zscore(series))
-                mask = pd.Series(False, index=self.df.index)
                 mask.loc[series.index] = z > threshold
             else:
                 continue
@@ -234,6 +249,10 @@ class GapFiller:
             if c != self.date_col
         ]
 
+    def _get_target_cols(self):
+        """Station variables to fill; reanalysis columns are predictors only."""
+        return [c for c in self._get_numeric_cols() if not _is_reanalysis(c)]
+
     def _create_temporal_features(self, dates):
         """Create temporal features for ML models."""
         features = pd.DataFrame(index=dates.index)
@@ -279,50 +298,60 @@ class GapFiller:
             self.fill_metadata[col]["confidence"].at[idx] = confidence
             self.fill_metadata[col]["flag"].at[idx] = "F"
 
+    @staticmethod
+    def _bounded_gaps(series, max_gap):
+        """Missing values in interior gaps of at most ``max_gap`` records.
+
+        Longer gaps are left whole for later stages, and leading/trailing
+        gaps are never extrapolated.
+        """
+        missing = series.isna()
+        run_id = (missing != missing.shift()).cumsum()
+        run_len = missing.groupby(run_id).transform("size")
+        observed = series.notna()
+        interior = observed.cummax() & observed[::-1].cummax()[::-1]
+        return missing & (run_len <= max_gap) & interior
+
     def linear_interpolation(self, columns=None, max_gap=3):
-        """Linear interpolation for short gaps."""
+        """Linear interpolation for gaps of up to ``max_gap`` records."""
         if columns is None:
-            columns = self._get_numeric_cols()
+            columns = self._get_target_cols()
         for col in columns:
             if col == self.date_col:
                 continue
-            missing_before = self.filled_df[col].isna()
-            self.filled_df[col] = self.filled_df[col].interpolate(
-                method="linear", limit=max_gap
-            )
-            filled_mask = missing_before & self.filled_df[col].notna()
-            if filled_mask.any():
-                self._record_fill(col, filled_mask, "linear_interpolation", 0.7)
+            mask = self._bounded_gaps(self.filled_df[col], max_gap)
+            if not mask.any():
+                continue
+            interp = self.filled_df[col].interpolate(method="linear")
+            self.filled_df.loc[mask, col] = interp[mask]
+            self._record_fill(col, mask, "linear_interpolation", 0.7)
         return self.filled_df
 
     def spline_interpolation(self, columns=None, max_gap=7, order=3):
-        """Spline interpolation for medium gaps."""
+        """Spline interpolation for gaps of up to ``max_gap`` records."""
         if columns is None:
-            columns = self._get_numeric_cols()
+            columns = self._get_target_cols()
         for col in columns:
             if col == self.date_col:
                 continue
-            missing_before = self.filled_df[col].isna()
+            mask = self._bounded_gaps(self.filled_df[col], max_gap)
+            if not mask.any():
+                continue
             try:
-                self.filled_df[col] = self.filled_df[col].interpolate(
-                    method="spline", order=order, limit=max_gap
+                interp = self.filled_df[col].interpolate(
+                    method="spline", order=order
                 )
             except Exception:
                 # Spline can fail on certain data; fall back to linear
-                self.filled_df[col] = self.filled_df[col].interpolate(
-                    method="linear", limit=max_gap
-                )
-            filled_mask = missing_before & self.filled_df[col].notna()
-            if filled_mask.any():
-                self._record_fill(
-                    col, filled_mask, "spline_interpolation", 0.65
-                )
+                interp = self.filled_df[col].interpolate(method="linear")
+            self.filled_df.loc[mask, col] = interp[mask]
+            self._record_fill(col, mask, "spline_interpolation", 0.65)
         return self.filled_df
 
     def seasonal_interpolation(self, columns=None):
         """Seasonal decomposition-based filling."""
         if columns is None:
-            columns = self._get_numeric_cols()
+            columns = self._get_target_cols()
         for col in columns:
             if col == self.date_col:
                 continue
@@ -346,81 +375,15 @@ class GapFiller:
                     )
         return self.filled_df
 
-    def random_forest_fill(self, target_col, predictor_cols=None, n_estimators=100):
-        """Random Forest regression using correlated variables + temporal features."""
-        if predictor_cols is None:
-            predictor_cols = [
-                c
-                for c in self._get_numeric_cols()
-                if c != target_col
-            ]
+    def _ml_fill(self, target_col, predictor_cols, make_model, method):
+        """Regression fill shared by the Random Forest and XGBoost methods.
 
-        missing_mask = self.filled_df[target_col].isna()
-        if not missing_mask.any():
-            return self.filled_df
-
-        # Build features
-        features = pd.DataFrame(index=self.filled_df.index)
-        for pc in predictor_cols:
-            features[pc] = self.filled_df[pc]
-
-        if self.date_col and self.date_col in self.filled_df.columns:
-            temp_feats = self._create_temporal_features(
-                self.filled_df[self.date_col]
-            )
-            features = pd.concat([features, temp_feats], axis=1)
-
-        # Lag features
-        for lag in [1, 2, 3, 7]:
-            lag_fwd = self.filled_df[target_col].shift(lag)
-            lag_bwd = self.filled_df[target_col].shift(-lag)
-            features[f"lag_{lag}"] = lag_fwd
-            features[f"lead_{lag}"] = lag_bwd
-
-        # Train/predict split
-        train_mask = (~missing_mask) & features.notna().all(axis=1)
-        predict_mask = missing_mask & features.notna().all(axis=1)
-
-        if train_mask.sum() < 20 or predict_mask.sum() == 0:
-            return self.filled_df
-
-        X_train = features.loc[train_mask]
-        y_train = self.filled_df.loc[train_mask, target_col]
-        X_predict = features.loc[predict_mask]
-
-        rf = RandomForestRegressor(
-            n_estimators=n_estimators,
-            max_depth=10,
-            min_samples_leaf=5,
-            random_state=42,
-            n_jobs=-1,
-        )
-        rf.fit(X_train, y_train)
-
-        try:
-            n_cv = min(5, int(train_mask.sum()))
-            if n_cv >= 2:
-                cv_scores = cross_val_score(
-                    rf, X_train, y_train, cv=n_cv, scoring="r2"
-                )
-                confidence = max(0.3, min(0.95, float(np.mean(cv_scores))))
-            else:
-                confidence = 0.5
-        except Exception:
-            confidence = 0.5
-
-        predictions = rf.predict(X_predict)
-        self.filled_df.loc[predict_mask, target_col] = predictions
-        self._record_fill(
-            target_col, predict_mask, "random_forest", round(confidence, 3)
-        )
-        return self.filled_df
-
-    def xgboost_fill(self, target_col, predictor_cols=None):
-        """XGBoost regression with temporal features."""
-        if not HAS_XGBOOST:
-            return self.random_forest_fill(target_col, predictor_cols)
-
+        Pass 1 uses the values either side of a gap (lags/leads) as
+        predictors. Inside multi-day gaps those neighbours are missing, so
+        pass 2 refits without them, using the other variables and calendar
+        terms. Pass 3 uses calendar terms alone, for records where the other
+        variables are missing too (e.g. a full station outage).
+        """
         if predictor_cols is None:
             predictor_cols = [
                 c for c in self._get_numeric_cols() if c != target_col
@@ -429,59 +392,90 @@ class GapFiller:
         missing_mask = self.filled_df[target_col].isna()
         if not missing_mask.any():
             return self.filled_df
+        observed = ~missing_mask
 
-        features = pd.DataFrame(index=self.filled_df.index)
+        base = pd.DataFrame(index=self.filled_df.index)
         for pc in predictor_cols:
-            features[pc] = self.filled_df[pc]
-
+            base[pc] = self.filled_df[pc]
+        temp_feats = pd.DataFrame(index=self.filled_df.index)
         if self.date_col and self.date_col in self.filled_df.columns:
             temp_feats = self._create_temporal_features(
                 self.filled_df[self.date_col]
             )
-            features = pd.concat([features, temp_feats], axis=1)
+            base = pd.concat([base, temp_feats], axis=1)
 
+        lags = pd.DataFrame(index=self.filled_df.index)
         for lag in [1, 2, 3, 7]:
-            features[f"lag_{lag}"] = self.filled_df[target_col].shift(lag)
-            features[f"lead_{lag}"] = self.filled_df[target_col].shift(-lag)
+            lags[f"lag_{lag}"] = self.filled_df[target_col].shift(lag)
+            lags[f"lead_{lag}"] = self.filled_df[target_col].shift(-lag)
 
-        train_mask = (~missing_mask) & features.notna().all(axis=1)
-        predict_mask = missing_mask & features.notna().all(axis=1)
+        for features in (pd.concat([base, lags], axis=1), base, temp_feats):
+            if features.shape[1] == 0:
+                continue
+            complete = features.notna().all(axis=1)
+            train_mask = observed & complete
+            predict_mask = self.filled_df[target_col].isna() & complete
 
-        if train_mask.sum() < 20 or predict_mask.sum() == 0:
-            return self.filled_df
+            if train_mask.sum() < 20 or predict_mask.sum() == 0:
+                continue
 
-        X_train = features.loc[train_mask]
-        y_train = self.filled_df.loc[train_mask, target_col]
-        X_predict = features.loc[predict_mask]
+            X_train = features.loc[train_mask]
+            y_train = self.filled_df.loc[train_mask, target_col]
+            X_predict = features.loc[predict_mask]
 
-        xgb = XGBRegressor(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.1,
-            subsample=0.8,
-            random_state=42,
-            verbosity=0,
-        )
-        xgb.fit(X_train, y_train)
+            model = make_model()
+            model.fit(X_train, y_train)
 
-        try:
-            n_cv = min(5, int(train_mask.sum()))
-            if n_cv >= 2:
-                cv_scores = cross_val_score(
-                    xgb, X_train, y_train, cv=n_cv, scoring="r2"
-                )
-                confidence = max(0.3, min(0.95, float(np.mean(cv_scores))))
-            else:
+            try:
+                n_cv = min(5, int(train_mask.sum()))
+                if n_cv >= 2:
+                    cv_scores = cross_val_score(
+                        make_model(), X_train, y_train, cv=n_cv, scoring="r2"
+                    )
+                    confidence = max(0.3, min(0.95, float(np.mean(cv_scores))))
+                else:
+                    confidence = 0.5
+            except Exception:
                 confidence = 0.5
-        except Exception:
-            confidence = 0.5
 
-        predictions = xgb.predict(X_predict)
-        self.filled_df.loc[predict_mask, target_col] = predictions
-        self._record_fill(
-            target_col, predict_mask, "xgboost", round(confidence, 3)
-        )
+            self.filled_df.loc[predict_mask, target_col] = model.predict(X_predict)
+            self._record_fill(
+                target_col, predict_mask, method, round(confidence, 3)
+            )
         return self.filled_df
+
+    def random_forest_fill(self, target_col, predictor_cols=None, n_estimators=100):
+        """Random Forest regression using correlated variables + temporal features."""
+        return self._ml_fill(
+            target_col,
+            predictor_cols,
+            lambda: RandomForestRegressor(
+                n_estimators=n_estimators,
+                max_depth=10,
+                min_samples_leaf=5,
+                random_state=42,
+                n_jobs=-1,
+            ),
+            "random_forest",
+        )
+
+    def xgboost_fill(self, target_col, predictor_cols=None):
+        """XGBoost regression with temporal features."""
+        if not HAS_XGBOOST:
+            return self.random_forest_fill(target_col, predictor_cols)
+        return self._ml_fill(
+            target_col,
+            predictor_cols,
+            lambda: XGBRegressor(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.8,
+                random_state=42,
+                verbosity=0,
+            ),
+            "xgboost",
+        )
 
     def era5_bias_correction(self, target_col, era5_col):
         """Fill gaps using reanalysis with quantile mapping bias correction."""
@@ -523,10 +517,21 @@ class GapFiller:
             )
         return self.filled_df
 
-    def auto_fill(self, columns=None):
-        """Automatic gap filling: cascade from simple to complex."""
+    def auto_fill(self, columns=None, reanalysis_map=None):
+        """Automatic gap filling: cascade from simple to complex.
+
+        Parameters
+        ----------
+        columns : list, optional
+            Columns to fill. Defaults to all station (non-reanalysis) variables.
+        reanalysis_map : dict, optional
+            ``{station_col: reanalysis_col}``. When given, gaps left after
+            interpolation are filled from the bias-corrected reanalysis
+            series before the seasonal and ML stages.
+        """
         if columns is None:
-            columns = self._get_numeric_cols()
+            columns = self._get_target_cols()
+        reanalysis_map = reanalysis_map or {}
 
         for col in columns:
             if col == self.date_col:
@@ -541,13 +546,21 @@ class GapFiller:
             if self.filled_df[col].isna().any():
                 self.spline_interpolation([col], max_gap=7)
 
-            # Step 3: Seasonal patterns
+            # Step 3: Bias-corrected reanalysis, when a matching series exists
+            if self.filled_df[col].isna().any() and col in reanalysis_map:
+                self.era5_bias_correction(col, reanalysis_map[col])
+
+            # Step 4: Seasonal patterns
             if self.filled_df[col].isna().any():
                 self.seasonal_interpolation([col])
 
-            # Step 4: ML for remaining
+            # Step 5: ML for remaining
             if self.filled_df[col].isna().any():
                 other_cols = [c for c in columns if c != col and c != self.date_col]
+                other_cols += [
+                    c for c in self._get_numeric_cols()
+                    if _is_reanalysis(c) and c not in other_cols
+                ]
                 if HAS_XGBOOST:
                     self.xgboost_fill(col, other_cols)
                 else:
@@ -555,8 +568,13 @@ class GapFiller:
 
         return self.filled_df
 
-    def bootstrap_uncertainty(self, target_col, n_bootstrap=50):
-        """Calculate uncertainty via bootstrap resampling."""
+    def bootstrap_uncertainty(self, target_col, n_bootstrap=50, random_state=42):
+        """Calculate uncertainty via bootstrap resampling.
+
+        Intervals come from ``n_bootstrap`` Random Forest models, each fitted
+        to a bootstrap resample of the observed records, independent of the
+        method that produced the filled value.
+        """
         original_missing = self.df[target_col].isna()
         if not original_missing.any():
             return pd.DataFrame()
@@ -587,11 +605,13 @@ class GapFiller:
         y_train = self.filled_df.loc[train_mask, target_col].values
         X_predict = features.loc[predict_mask].values
 
+        rng = np.random.default_rng(random_state)
         predictions = np.zeros((n_bootstrap, int(predict_mask.sum())))
         for i in range(n_bootstrap):
-            idx = np.random.choice(len(X_train), size=len(X_train), replace=True)
+            idx = rng.choice(len(X_train), size=len(X_train), replace=True)
             model = RandomForestRegressor(
-                n_estimators=50, max_depth=8, random_state=i, n_jobs=-1
+                n_estimators=50, max_depth=8, random_state=random_state + i,
+                n_jobs=-1,
             )
             model.fit(X_train[idx], y_train[idx])
             predictions[i] = model.predict(X_predict)
@@ -609,6 +629,8 @@ class GapFiller:
 class ClimFillEngine:
     """Main interface for the ClimFill gap-filling pipeline."""
 
+    METHODS = ("auto", "linear", "spline", "seasonal", "random_forest", "xgboost")
+
     def __init__(self):
         self.raw_df = None
         self.df = None
@@ -617,6 +639,7 @@ class ClimFillEngine:
         self.filler = None
         self.detector = None
         self.filled_df = None
+        self.outliers = {}
         self.uncertainty_results = {}
 
     def load_csv(self, filepath_or_buffer, date_col=None):
@@ -626,6 +649,10 @@ class ClimFillEngine:
 
         self.detector = GapDetector(self.df, date_col)
         self.date_col = self.detector.detect_date_column()
+        # Interpolation assumes chronological order
+        self.detector.df = self.detector.df.sort_values(
+            self.date_col, kind="stable"
+        ).reset_index(drop=True)
         self.df = self.detector.df.copy()
 
         # Replace sentinel values
@@ -642,75 +669,217 @@ class ClimFillEngine:
             "sentinels_replaced": replaced,
         }
 
-    def detect_gaps(self, check_outliers=True):
-        """Run gap detection and analysis."""
+    def station_columns(self):
+        """Numeric station variables (excludes the date and reanalysis columns)."""
+        return [
+            c
+            for c in self.df.select_dtypes(include=[np.number]).columns
+            if c != self.date_col and not _is_reanalysis(c)
+        ]
+
+    def detect_gaps(self, check_outliers=True, outlier_method="iqr",
+                    outlier_threshold=3.0, outlier_columns=None):
+        """Run gap detection and analysis.
+
+        ``outlier_columns`` limits the outlier screen to those variables
+        (default: all station variables).
+        """
         self.detector = GapDetector(self.df, self.date_col)
         self.detector.detect_date_column()
         self.df = self.detector.df.copy()
-        self.gap_report = self.detector.analyze_gaps()
+        columns = self.station_columns()
+        self.gap_report = self.detector.analyze_gaps(columns)
 
         result = {
             "gap_report": self.gap_report,
             "temporal_regularity": self.detector.check_temporal_regularity(),
         }
+        self.outliers = {}
         if check_outliers:
-            result["outliers"] = self.detector.detect_outliers()
+            self.outliers = self.detector.detect_outliers(
+                columns if outlier_columns is None else list(outlier_columns),
+                method=outlier_method,
+                threshold=outlier_threshold,
+            )
+            result["outliers"] = self.outliers
         return result
 
-    def fill_gaps(self, method="auto", columns=None, **kwargs):
-        """Fill gaps using the specified method."""
-        self.filler = GapFiller(self.df, self.date_col)
+    def insert_missing_timestamps(self, freq=None):
+        """Add empty rows for timestamps absent from a regular series.
 
+        Records missing from the file are invisible to gap detection, so
+        they are inserted as all-NaN rows. ``freq`` defaults to the most
+        common interval. Returns the number of rows inserted.
+        """
+        dates = self.df[self.date_col].dropna()
+        if freq is None:
+            diffs = dates.sort_values().diff().dropna()
+            if diffs.empty:
+                return 0
+            freq = diffs.mode().iloc[0]
+        full = pd.date_range(dates.min(), dates.max(), freq=freq)
+        absent = full.difference(pd.DatetimeIndex(dates))
+        if len(absent) == 0:
+            return 0
+        extra = pd.DataFrame({self.date_col: absent})
+        self.df = (
+            pd.concat([self.df, extra], ignore_index=True)
+            .sort_values(self.date_col, kind="stable")
+            .reset_index(drop=True)
+        )
+        return len(absent)
+
+    def merge_reanalysis(self, rean_df):
+        """Join daily reanalysis columns onto the station data by calendar date.
+
+        ``rean_df`` must carry a ``date`` column and ``reanalysis_``-prefixed
+        variables, as returned by :func:`get_open_meteo_data`. Re-merging
+        replaces previously merged reanalysis columns.
+        """
+        rean_cols = [c for c in rean_df.columns if _is_reanalysis(c)]
+        rean = rean_df[rean_cols].copy()
+        rean["_merge_date"] = pd.to_datetime(rean_df["date"]).dt.normalize()
+        rean = rean.drop_duplicates("_merge_date")
+
+        base = self.df.drop(
+            columns=[c for c in self.df.columns if _is_reanalysis(c)]
+        )
+        base["_merge_date"] = base[self.date_col].dt.normalize()
+        merged = base.merge(rean, on="_merge_date", how="left")
+        self.df = merged.drop(columns=["_merge_date"])
+        return rean_cols
+
+    def _run_fill(self, filler, method, columns, reanalysis_map):
         if method == "auto":
-            self.filled_df = self.filler.auto_fill(columns)
-        elif method == "linear":
-            self.filled_df = self.filler.linear_interpolation(columns)
-        elif method == "spline":
-            self.filled_df = self.filler.spline_interpolation(columns)
-        elif method == "seasonal":
-            self.filled_df = self.filler.seasonal_interpolation(columns)
-        elif method == "random_forest":
-            self.filled_df = self._fill_ml(columns, "random_forest")
-        elif method == "xgboost":
-            self.filled_df = self._fill_ml(columns, "xgboost")
-        else:
+            return filler.auto_fill(columns, reanalysis_map=reanalysis_map)
+        if method == "linear":
+            return filler.linear_interpolation(columns)
+        if method == "spline":
+            return filler.spline_interpolation(columns)
+        if method == "seasonal":
+            return filler.seasonal_interpolation(columns)
+        if method in ("random_forest", "xgboost"):
+            if columns is None:
+                columns = filler._get_target_cols()
+            for col in columns:
+                if col == self.date_col:
+                    continue
+                if method == "xgboost":
+                    filler.xgboost_fill(col)
+                else:
+                    filler.random_forest_fill(col)
+            return filler.filled_df
+        raise ValueError(
+            f"Unknown method: {method}. Choose from: {', '.join(self.METHODS)}"
+        )
+
+    def fill_gaps(self, method="auto", columns=None, reanalysis_map=None, **kwargs):
+        """Fill gaps using the specified method.
+
+        ``reanalysis_map`` (``{station_col: reanalysis_col}``) enables the
+        bias-corrected reanalysis stage of the ``auto`` cascade.
+        """
+        if method not in self.METHODS:
             raise ValueError(
-                f"Unknown method: {method}. "
-                f"Choose from: auto, linear, spline, seasonal, random_forest, xgboost"
+                f"Unknown method: {method}. Choose from: {', '.join(self.METHODS)}"
             )
+        self.filler = GapFiller(self.df, self.date_col)
+        self.uncertainty_results = {}
+        self.filled_df = self._run_fill(
+            self.filler, method, columns, reanalysis_map
+        )
         return self.filled_df
 
-    def _fill_ml(self, columns, method):
-        if columns is None:
-            columns = self.filler._get_numeric_cols()
-        for col in columns:
-            if col == self.date_col:
-                continue
-            if method == "xgboost":
-                self.filler.xgboost_fill(col)
-            else:
-                self.filler.random_forest_fill(col)
-        return self.filler.filled_df
+    def compute_uncertainty(self, columns=None, n_bootstrap=50,
+                            progress_callback=None):
+        """Compute uncertainty estimates for filled values.
 
-    def compute_uncertainty(self, columns=None, n_bootstrap=50):
-        """Compute uncertainty estimates for filled values."""
+        ``progress_callback(col, done, total)`` is called after each variable.
+        """
         if self.filler is None:
             raise RuntimeError("Run fill_gaps() first.")
 
         if columns is None:
-            columns = [
-                c
-                for c in self.df.select_dtypes(include=[np.number]).columns
-                if c != self.date_col
-            ]
+            columns = self.station_columns()
+        columns = [c for c in columns if self.df[c].isna().sum() > 0]
 
-        for col in columns:
-            if self.df[col].isna().sum() > 0:
-                result = self.filler.bootstrap_uncertainty(col, n_bootstrap)
-                if not result.empty:
-                    self.uncertainty_results[col] = result
+        for i, col in enumerate(columns, start=1):
+            result = self.filler.bootstrap_uncertainty(col, n_bootstrap)
+            if not result.empty:
+                self.uncertainty_results[col] = result
+            if progress_callback is not None:
+                progress_callback(col, i, len(columns))
 
         return self.uncertainty_results
+
+    def validate(self, method="auto", gap_length=1, fraction=0.05,
+                 columns=None, reanalysis_map=None, random_state=42):
+        """Hold-out accuracy assessment of a fill method.
+
+        Observed values are hidden as synthetic gaps of ``gap_length``
+        records (about ``fraction`` of the observed values per variable),
+        the method is re-run, and the reconstructed values are compared
+        with the hidden observations.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per variable: n, MAE, RMSE, bias (filled - observed)
+            and R^2.
+        """
+        if columns is None:
+            columns = self.station_columns()
+        rng = np.random.default_rng(random_state)
+        masked = self.df.copy()
+        held_out = {}
+
+        for col in columns:
+            observed = self.df[col].notna().to_numpy()
+            # Starts where a full window of gap_length observed values fits
+            window = np.convolve(observed, np.ones(gap_length, int), "valid")
+            starts = np.flatnonzero(window == gap_length)
+            target = max(1, int(observed.sum() * fraction / gap_length))
+            rng.shuffle(starts)
+            taken = np.zeros(len(observed), bool)
+            chosen = []
+            for st_ in starts:
+                # Keep one observed record either side so gaps stay separate
+                lo, hi = max(st_ - 1, 0), st_ + gap_length + 1
+                if taken[lo:hi].any():
+                    continue
+                taken[st_:st_ + gap_length] = True
+                chosen.append(st_)
+                if len(chosen) >= target:
+                    break
+            idx = self.df.index[taken]
+            if len(idx) == 0:
+                continue
+            held_out[col] = idx
+            masked.loc[idx, col] = np.nan
+
+        filler = GapFiller(masked, self.date_col)
+        filled = self._run_fill(filler, method, columns, reanalysis_map)
+
+        rows = []
+        for col, idx in held_out.items():
+            obs = self.df.loc[idx, col]
+            est = filled.loc[idx, col]
+            ok = est.notna()
+            obs, est = obs[ok].to_numpy(float), est[ok].to_numpy(float)
+            row = {"variable": col, "n": int(ok.sum())}
+            if len(obs) > 0:
+                err = est - obs
+                ss_tot = float(np.sum((obs - obs.mean()) ** 2))
+                row.update(
+                    mae=float(np.mean(np.abs(err))),
+                    rmse=float(np.sqrt(np.mean(err ** 2))),
+                    bias=float(np.mean(err)),
+                    r2=(1 - float(np.sum(err ** 2)) / ss_tot) if ss_tot > 0 else np.nan,
+                )
+            rows.append(row)
+        return pd.DataFrame(
+            rows, columns=["variable", "n", "mae", "rmse", "bias", "r2"]
+        )
 
     def export(self, filepath=None, include_uncertainty=True, include_metadata=True):
         """Export filled dataset with quality flags and metadata."""
@@ -724,6 +893,16 @@ class ClimFillEngine:
                 export_df[f"{col}_flag"] = meta["flag"]
                 export_df[f"{col}_method"] = meta["method"]
                 export_df[f"{col}_confidence"] = meta["confidence"]
+
+        if include_metadata and self.outliers:
+            # Statistical outliers in the original record are flagged "S"
+            for col, info in self.outliers.items():
+                flag_col = f"{col}_flag"
+                if flag_col not in export_df.columns:
+                    export_df[flag_col] = np.where(
+                        self.df[col].notna(), "O", ""
+                    )
+                export_df.loc[info["indices"], flag_col] = "S"
 
         if include_uncertainty and self.uncertainty_results:
             for col, unc_df in self.uncertainty_results.items():
@@ -795,5 +974,10 @@ class ClimFillEngine:
                     "methods_used": methods_used,
                     "mean_confidence": mean_conf,
                 }
+
+        if self.outliers:
+            report["outlier_summary"] = {
+                col: info["count"] for col, info in self.outliers.items()
+            }
 
         return report
