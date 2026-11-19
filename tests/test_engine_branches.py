@@ -57,7 +57,7 @@ def test_random_forest_fill_handles_cross_val_failure(monkeypatch):
     def _boom(*args, **kwargs):
         raise ValueError("cv fail")
 
-    monkeypatch.setattr(engine, "cross_val_score", _boom)
+    monkeypatch.setattr(engine, "cross_val_predict", _boom)
     filled = filler.random_forest_fill("Temp", ["Aux"])
     assert filled["Temp"].isna().sum() < df["Temp"].isna().sum()
 
@@ -94,7 +94,7 @@ def test_spline_interpolation_falls_back(monkeypatch):
     original = pd.Series.interpolate
 
     def _maybe_fail(self, *args, **kwargs):
-        if kwargs.get("method") == "spline":
+        if kwargs.get("method") in ("spline", "pchip"):
             raise ValueError("bad spline")
         return original(self, *args, **kwargs)
 
@@ -116,8 +116,8 @@ def test_xgboost_fill_stubbed(monkeypatch):
     df.to_csv(buf, index=False)
     buf.seek(0)
 
-    def _fake_cv(model, X, y, cv, scoring=None):
-        return np.array([0.6, 0.7])
+    def _fake_cv(model, X, y, cv):
+        return np.asarray(y, float)
 
     class DummyXGB:
         def __init__(self, **kwargs):
@@ -132,7 +132,7 @@ def test_xgboost_fill_stubbed(monkeypatch):
 
     monkeypatch.setattr(engine, "HAS_XGBOOST", True)
     monkeypatch.setattr(engine, "XGBRegressor", DummyXGB)
-    monkeypatch.setattr(engine, "cross_val_score", _fake_cv)
+    monkeypatch.setattr(engine, "cross_val_predict", _fake_cv)
 
     eng = ClimFillEngine()
     eng.load_csv(buf)
@@ -156,7 +156,7 @@ def test_xgboost_fill_handles_cv_error(monkeypatch):
         raise ValueError("cv error")
 
     monkeypatch.setattr(engine, "HAS_XGBOOST", True)
-    monkeypatch.setattr(engine, "cross_val_score", _boom)
+    monkeypatch.setattr(engine, "cross_val_predict", _boom)
 
     class DummyXGB:
         def __init__(self, **kwargs):
@@ -237,18 +237,26 @@ def test_auto_fill_invokes_ml_stage(monkeypatch):
     assert filler.fill_metadata["Temp"]["method"].str.contains("rf_stub").any()
 
 
-def test_bootstrap_uncertainty_short_circuits_no_missing():
+def test_residual_intervals_empty_without_fills():
     df = _make_df(length=10)
     filler = GapFiller(df, "Date")
-    res = filler.bootstrap_uncertainty("Temp", n_bootstrap=5)
-    assert res.empty
+    assert filler.residual_intervals("Temp").empty
 
 
-def test_bootstrap_uncertainty_short_circuits_with_little_data():
+def test_residual_intervals_empty_with_little_data():
     df = _make_df(length=10, missing_idx=[1, 2])
     filler = GapFiller(df, "Date")
-    res = filler.bootstrap_uncertainty("Temp", n_bootstrap=5)
-    assert res.empty
+    filler.linear_interpolation(["Temp"])
+    # Too few observations to hold any out: no interval, undefined confidence
+    assert filler.residual_intervals("Temp").empty
+    assert filler.fill_metadata["Temp"]["confidence"].iloc[[1, 2]].isna().all()
+
+
+def test_bootstrap_uncertainty_is_a_deprecated_alias():
+    df = _make_df(length=10, missing_idx=[1, 2])
+    filler = GapFiller(df, "Date")
+    with pytest.warns(DeprecationWarning):
+        assert filler.bootstrap_uncertainty("Temp", n_bootstrap=5).empty
 
 
 def test_engine_compute_uncertainty_requires_fill():

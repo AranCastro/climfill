@@ -16,7 +16,7 @@ def generate_sample_station(
     np.random.seed(seed)
     dates = pd.date_range(start_date, end_date, freq="D")
     n = len(dates)
-    doy = dates.dayofyear
+    doy = dates.day_of_year
 
     # Temperature with seasonal cycle + autocorrelation
     temp = 28 + 6 * np.sin(2 * np.pi * (doy - 105) / 365)
