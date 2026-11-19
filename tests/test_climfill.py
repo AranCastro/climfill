@@ -16,7 +16,7 @@ def sample_df():
     np.random.seed(42)
     dates = pd.date_range("2020-01-01", "2022-12-31", freq="D")
     n = len(dates)
-    doy = dates.dayofyear
+    doy = dates.day_of_year
     temp = 25 + 8 * np.sin(2 * np.pi * (doy - 100) / 365) + np.random.normal(0, 2, n)
     precip = np.maximum(0, np.random.exponential(3, n))
     humidity = 60 + 15 * np.sin(2 * np.pi * (doy - 200) / 365) + np.random.normal(0, 5, n)
@@ -214,7 +214,7 @@ class TestClimFillEngine:
 
     def test_uncertainty(self, engine_from_df):
         engine_from_df.fill_gaps(method="auto")
-        results = engine_from_df.compute_uncertainty(n_bootstrap=10)
+        results = engine_from_df.compute_uncertainty()
         assert isinstance(results, dict)
 
     def test_full_pipeline(self, sample_df, tmp_path):
@@ -226,7 +226,7 @@ class TestClimFillEngine:
         eng.load_csv(buf)
         eng.detect_gaps()
         eng.fill_gaps(method="auto")
-        eng.compute_uncertainty(n_bootstrap=10)
+        eng.compute_uncertainty()
         path = str(tmp_path / "full.csv")
         df = eng.export(filepath=path, include_uncertainty=True)
         assert os.path.exists(path)

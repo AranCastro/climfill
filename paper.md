@@ -20,49 +20,61 @@ bibliography: paper.bib
 
 # Summary
 
-Missing observations in climate station time series are common due to sensor malfunction, power interruptions, and maintenance gaps. These discontinuities reduce the reliability of downstream analyses in hydrology, climatology, agriculture, and environmental modelling. *ClimFill* is an open-source Python package that automates detection, reconstruction, and quality-flagging of missing values in meteorological time series using statistical interpolation, machine learning, and optional reanalysis data integration with uncertainty estimation.
+Missing observations in climate station time series arise from sensor malfunction, power interruption, and maintenance outages, and manned station records carry further data-quality problems [@Hunziker2017]. Such gaps reduce the reliability of downstream analyses in hydrology, climatology, agriculture, and environmental modelling. *ClimFill* is an open-source Python package that detects, reconstructs, and flags missing values in daily meteorological station records using interpolation, climatology, regression, and optional bias-corrected reanalysis data. Each filled value is exported with the method that produced it, a hold-out skill score, and a 95% interval.
 
 # Statement of Need
 
-Climate time series underpin water resource assessments, drought analysis, crop modelling, and climate variability studies. However, many observational datasets contain non-random gaps that compromise statistical robustness and bias trend analysis. Existing gap-filling approaches range from simple interpolation to advanced imputation frameworks [@vanBuuren2011; @Stekhoven2012], yet these often require custom scripting or lack integrated uncertainty assessment. Additionally, bias-corrected reanalysis integration workflows are typically implemented manually.
+Station time series support water resource assessment, drought analysis, crop modelling, and studies of climate variability. Many observational records contain non-random gaps that bias trend estimates and reduce the sample available for statistical analysis. General-purpose imputation frameworks such as *mice* [@vanBuuren2011] and *missForest* [@Stekhoven2012] do not use temporal structure unless the user constructs lagged predictors, so their application to station series requires custom scripting. Bias correction of reanalysis data for infilling is usually implemented by hand for each study.
 
-*ClimFill* provides an integrated, reproducible, and automated framework accessible through a command-line interface, Python API, and web interface. The package is intended for researchers and practitioners who require transparent, method-aware, and quality-controlled reconstruction of climate station datasets.
+*ClimFill* combines these steps in one reproducible workflow that is accessible through a command-line interface, a Python API, and a web interface. The package is intended for researchers and practitioners who need a documented, method-aware reconstruction of single-station records.
+
+# State of the Field
+
+CLIMFILL v0.9 [@Bessenbacher2022] is a multivariate framework for gap filling gridded Earth observations; it combines spatial interpolation with a multivariate statistical step that accounts for the dependence between variables. Despite the similar name, the present package is independent of that framework and addresses a different data type: a single station record with no spatial neighbours. *mice* and *missForest* provide multivariate imputation without temporal predictors. The contribution of *ClimFill* is the combination, for station series, of gap-length-aware method selection, physical limits on filled values, per-value provenance, and intervals calibrated on withheld observations.
 
 # Functionality
 
-ClimFill implements a hierarchical filling strategy:
+1. **Gap detection.** Missing-value codes (by default -999, -9999, and -99.9; configurable) are converted to missing, records are sorted by date, and absent timestamps of daily or sub-daily series are inserted as gaps. Gap lengths, temporal regularity, and statistical outliers are reported; zero-inflated variables are screened on their non-zero values.
 
-1. **Gap Detection**  
-   Automatically detects missing values including common sentinel codes (e.g., -999, -9999), quantifies gap lengths, evaluates temporal regularity, and identifies statistical outliers.
+2. **Gap-filling methods.**
+   - Linear interpolation for interior gaps of up to three records
+   - Spline interpolation for interior gaps of up to seven records
+   - Bias-corrected reanalysis, where a matching reanalysis series is supplied
+   - Annual-cycle climatology (mean and two harmonics) plus the anomaly at the gap edges, damped towards climatology inside long gaps
+   - Random Forest or XGBoost regression on the other variables, lagged values, and cyclical calendar terms, refitted without lagged values inside multi-day gaps
 
-2. **Adaptive Gap-Filling Methods**  
-   - Short gaps: linear interpolation  
-   - Medium gaps: cubic spline interpolation  
-   - Seasonal gaps: decomposition-based reconstruction  
-   - Long gaps: Random Forest or XGBoost regression using correlated variables and cyclical temporal predictors  
+   In the automatic mode the stages are applied in this order to each variable. An interpolation stage is skipped when its error on withheld observations exceeds that of the climatology stage. Zero-inflated variables such as daily precipitation are not splined, and regression precedes climatology for them.
 
-3. **Reanalysis Integration**  
-   Optional retrieval of gridded reanalysis data (e.g., ERA5 [@Hersbach2020]) via Open-Meteo API with quantile mapping bias correction [@Maraun2016].
+3. **Physical limits.** Filled values are limited to bounds inferred from the variable name (for example, precipitation at or above zero and relative humidity within 0–100%), which the user may override.
 
-4. **Uncertainty Quantification**  
-   Bootstrap resampling provides confidence intervals for reconstructed values.
+4. **Reanalysis integration.** ERA5 daily series [@Hersbach2020] are retrieved from the Open-Meteo archive API for the station coordinates (decimal degrees, WGS 84, EPSG:4326) and bias-corrected by empirical quantile mapping [@Maraun2016] against the overlapping station observations.
 
-5. **Quality Flagging**  
-   Each observation is labelled as Original, Filled, or Suspicious, with associated method metadata.
+5. **Skill and uncertainty.** While filling, each stage hides a sample of observed values as gaps of the lengths it is about to fill and reconstructs them. The R² of this hold-out is recorded as the confidence of the fill. The 95% interval of a filled value is the value minus the 97.5th and 2.5th percentiles of the hold-out residuals of the stage that produced it. A separate routine reports hold-out mean absolute error, root-mean-square error, bias, and R² for any method and gap length.
+
+6. **Quality flags.** Each value is labelled Original, Filled, or Suspicious (statistical outlier), with the method recorded for every filled value.
 
 # Quality Control
 
-The package includes 60+ automated unit tests executed through continuous integration (GitHub Actions). Test coverage exceeds 90%, ensuring robustness across edge cases including irregular temporal spacing, short time series, and machine learning fallback scenarios.
+The package includes 110 automated tests executed through continuous integration (GitHub Actions) on Python 3.11 and 3.13, with line coverage of 96%. A subset of the tests compares filled values with withheld truth: the bundled sample series (1,826 daily records, eight variables) is generated with a fixed seed, so the complete series behind every gap is known. On this sample the automatic mode filled all 997 missing values, its root-mean-square error did not exceed 1.15 times that of calendar-month climatology for any variable, and the 95% intervals contained the true value for 91–98% of filled values per variable. These figures derive from one synthetic realisation and have not been established on observed station data.
+
+# Limitations
+
+Consistency between variables (for example, minimum temperature not exceeding maximum temperature) is not enforced. Reconstruction of daily precipitation from a single station has low skill, which the recorded confidence reflects. Bounds are inferred from column names and should be checked for variables with unconventional names or units.
 
 # Availability and Installation
 
-Source code is available at:  
-https://github.com/AranCastro/climfill  
+Source code is available at:
+https://github.com/AranCastro/climfill
 
-Archived release (v1.0.1):  
-https://doi.org/10.5281/zenodo.18638725  
+Archived release (v1.0.1):
+https://doi.org/10.5281/zenodo.18638725
+
+The functionality described here corresponds to version 1.1.0, which postdates the archived release.
 
 Installation:
 
 ```bash
 pip install -e .
+```
+
+# References

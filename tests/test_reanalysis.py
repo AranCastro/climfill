@@ -1,4 +1,3 @@
-import pandas as pd
 import pytest
 
 import climfill.reanalysis as reanalysis

@@ -54,17 +54,60 @@ def test_cli_main_writes_output_and_report(tmp_path, monkeypatch, capsys):
     assert "Filling gaps" in capsys.readouterr().out
 
 
-def test_cli_main_exits_when_no_gaps(tmp_path, monkeypatch):
+def test_cli_writes_output_when_no_gaps(tmp_path, monkeypatch):
     df = _build_cli_df(with_gaps=False)
     input_path = tmp_path / "clean.csv"
     df.to_csv(input_path, index=False)
 
     monkeypatch.setattr(sys, "argv", ["climfill", str(input_path), "--quiet"])
+    cli.main()
 
+    out = pd.read_csv(tmp_path / "clean_filled.csv")
+    assert list(out["Temperature"]) == list(df["Temperature"])
+
+
+@pytest.mark.parametrize("name", ["station.txt", "STATION.CSV", "station"])
+def test_cli_never_overwrites_the_input(tmp_path, monkeypatch, name):
+    df = _build_cli_df()
+    input_path = tmp_path / name
+    df.to_csv(input_path, index=False)
+    before = input_path.read_bytes()
+
+    monkeypatch.setattr(
+        sys, "argv", ["climfill", str(input_path), "--method", "linear", "--quiet"]
+    )
+    cli.main()
+
+    assert input_path.read_bytes() == before
+    suffix = input_path.suffix or ".csv"
+    assert (tmp_path / f"{input_path.stem}_filled{suffix}").exists()
+
+
+def test_cli_rejects_output_equal_to_input(tmp_path, monkeypatch):
+    input_path = tmp_path / "in.csv"
+    _build_cli_df().to_csv(input_path, index=False)
+    monkeypatch.setattr(
+        sys, "argv", ["climfill", str(input_path), "-o", str(input_path)]
+    )
     with pytest.raises(SystemExit) as exc:
         cli.main()
+    assert exc.value.code == 2
 
-    assert exc.value.code == 0
+
+def test_cli_custom_sentinels(tmp_path, monkeypatch):
+    df = _build_cli_df(with_gaps=False).astype({"Temperature": float})
+    df.loc[3, "Temperature"] = 9999.0
+    input_path = tmp_path / "in.csv"
+    df.to_csv(input_path, index=False)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["climfill", str(input_path), "--method", "linear", "--quiet",
+         "--sentinels", "9999"],
+    )
+    cli.main()
+    out = pd.read_csv(tmp_path / "in_filled.csv")
+    assert out.loc[3, "Temperature"] == pytest.approx(13.0)
+    assert out.loc[3, "Temperature_flag"] == "F"
 
 
 def test_cli_reanalysis_failure_is_non_fatal(tmp_path, monkeypatch, capsys):
@@ -132,8 +175,6 @@ def test_cli_reanalysis_success_with_uncertainty(tmp_path, monkeypatch):
             "0.0",
             "--reanalysis",
             "--uncertainty",
-            "--bootstrap-n",
-            "3",
         ],
     )
 

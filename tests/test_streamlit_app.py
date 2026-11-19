@@ -61,7 +61,6 @@ def test_full_workflow_survives_reruns():
 
     unc_select = next(m for m in at.multiselect if m.label == "Variables")
     unc_select.set_value(["Pressure"])
-    next(n for n in at.number_input if n.label == "Resamples").set_value(10)
     at.run()
     _button(at, "Estimate").click().run()
     assert not at.exception

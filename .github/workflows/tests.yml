@@ -2,7 +2,11 @@ name: Python Tests
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -28,6 +32,9 @@ jobs:
       # [all] adds XGBoost, Streamlit and Plotly so the web-app tests run too
       - name: Install package with all extras (editable)
         run: pip install -e ".[all]"
+
+      - name: Lint (unused names, syntax errors, likely bugs)
+        run: ruff check . --select F,E9,B
 
       - name: Run tests
         run: pytest -v --cov=climfill --cov-report=term-missing

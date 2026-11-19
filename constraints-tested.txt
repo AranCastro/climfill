@@ -1,0 +1,13 @@
+# Versions with which the test suite was last run (Python 3.13).
+# Reproduce that environment with:
+#   pip install -e ".[all]" -c constraints-tested.txt
+numpy==2.5.5
+pandas==3.1.1
+scipy==1.18.1
+scikit-learn==1.9.1
+requests==2.34.2
+xgboost==3.4.1
+streamlit==1.67.0
+plotly==7.1.0
+pytest==9.2.0
+pytest-cov==7.1.0

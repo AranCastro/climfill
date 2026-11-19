@@ -52,15 +52,20 @@ METHODS = {
     "auto": "Auto cascade (recommended)",
     "linear": "Linear interpolation (gaps ≤ 3 records)",
     "spline": "Cubic spline (gaps ≤ 7 records)",
-    "seasonal": "Monthly climatology + interpolated anomaly",
+    "seasonal": "Annual-cycle climatology + damped anomaly",
     "random_forest": "Random Forest regression",
     "xgboost": "XGBoost regression",
 }
 METHOD_HELP = (
     "**Auto** fills each variable in stages: linear (≤ 3 records), spline "
     "(≤ 7), bias-corrected reanalysis (if enabled), seasonal climatology, "
-    "then XGBoost/Random Forest for anything left. ML methods use the other "
-    "variables, reanalysis series, lags and calendar terms as predictors."
+    "then XGBoost/Random Forest for anything left. An interpolation stage is "
+    "skipped for a variable when its hold-out error exceeds that of the "
+    "seasonal stage. Zero-inflated variables such as daily precipitation "
+    "skip the spline and use regression before climatology. Filled values "
+    "are kept within physical limits (e.g. precipitation ≥ 0, relative "
+    "humidity 0–100 %). ML methods use the other variables, reanalysis "
+    "series, lags and calendar terms as predictors."
 )
 FLAG_LEGEND = (
     "Flags: **O** original · **F** filled · **S** suspicious (statistical "
@@ -221,7 +226,8 @@ with st.sidebar:
             "Station CSV",
             type=["csv"],
             help="One date column plus numeric variables. Sentinels such as "
-                 "-999 and -9999 are treated as missing.",
+                 "-999, -9999 and -99.9 are treated as missing; absent "
+                 "daily timestamps are inserted as gaps.",
         )
         if uploaded is not None:
             raw = uploaded.getvalue()
@@ -326,7 +332,7 @@ with tab_data:
     )
     c4.metric(
         "Sentinels replaced", f"{sum(sentinels.values()):,}", border=True,
-        help="Values such as -999 or -9999 converted to missing.",
+        help="Values -999, -9999 and -99.9 converted to missing.",
     )
 
     st.markdown(f"**{s.data_name}** · date column `{date_col}`")
@@ -787,9 +793,10 @@ with tab_fill:
                     ),
                     "Mean confidence": st.column_config.NumberColumn(
                         format="%.2f",
-                        help="Heuristic per-method score; cross-validated R² "
-                             "for ML methods. See hold-out validation below "
-                             "for measured accuracy.",
+                        help="R² (0–1) of the method on observed values "
+                             "hidden while filling; cross-validated R² for "
+                             "ML methods. Empty when too few records could "
+                             "be held out.",
                     ),
                 },
             )
@@ -903,18 +910,18 @@ with tab_fill:
                         "Bias = mean(filled − observed)."
                     )
 
-            # Bootstrap uncertainty
-            with st.expander("Uncertainty (bootstrap 95 % intervals)",
+            # Hold-out residual intervals
+            with st.expander("Uncertainty (95 % intervals)",
                              icon=":material/ssid_chart:"):
                 st.caption(
-                    "Fits one Random Forest (50 trees) per bootstrap resample of "
-                    "the observed records and reports the 2.5–97.5 percentile "
-                    "range of predictions for each filled value. The interval "
-                    "is independent of the method that produced the value. "
-                    "Runtime grows with resamples × variables."
+                    "While filling, each method also reconstructs a sample of "
+                    "observed values hidden as gaps of the same lengths. The "
+                    "interval of a filled value is that value minus the "
+                    "97.5th and 2.5th percentiles of those hold-out residuals "
+                    "(filled − observed) for the method that produced it, "
+                    "limited to the physical bounds of the variable."
                 )
-                c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="bottom")
-                n_boot = c1.number_input("Resamples", 10, 200, 50, 10)
+                c2, c3 = st.columns([3, 1], vertical_alignment="bottom")
                 unc_vars = c2.multiselect("Variables", gap_vars, default=gap_vars)
                 if c3.button("Estimate", icon=":material/play_arrow:",
                              width="stretch", disabled=not unc_vars):
@@ -925,11 +932,11 @@ with tab_fill:
 
                     engine.uncertainty_results = {}
                     engine.compute_uncertainty(
-                        columns=unc_vars, n_bootstrap=int(n_boot),
-                        progress_callback=_progress,
+                        columns=unc_vars, progress_callback=_progress,
                     )
                     bar.empty()
-                    s.unc_params = {"n_bootstrap": int(n_boot),
+                    s.unc_params = {"basis": "hold-out residual quantiles",
+                                    "level": 0.95,
                                     "variables": list(unc_vars),
                                     "random_state": 42}
                     st.rerun()
@@ -948,11 +955,10 @@ with tab_fill:
                                 for k in ("Median CI width", "Max CI width")
                             },
                         )
-                        st.caption(f"{s.unc_params['n_bootstrap']} resamples; "
-                                   "intervals are drawn on the chart above.")
+                        st.caption("Intervals are drawn on the chart above.")
                     else:
-                        st.caption("Too few complete records to estimate "
-                                   "intervals.")
+                        st.caption("Too few observed records to hold out; no "
+                                   "interval can be given.")
 
 
 # ──────────────────────────────────────────────────────────────

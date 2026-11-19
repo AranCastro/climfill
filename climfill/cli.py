@@ -8,8 +8,8 @@ Usage:
 """
 
 import argparse
-import sys
 import json
+from pathlib import Path
 
 from .engine import ClimFillEngine
 
@@ -33,8 +33,25 @@ def main():
         action="store_true",
         help="Download Open-Meteo reanalysis (requires --lat and --lon)",
     )
-    parser.add_argument("--uncertainty", action="store_true")
-    parser.add_argument("--bootstrap-n", type=int, default=50)
+    parser.add_argument(
+        "--uncertainty",
+        action="store_true",
+        help="Add 95%% intervals derived from hold-out residuals",
+    )
+    parser.add_argument(
+        "--bootstrap-n", type=int, default=None,
+        help="Deprecated; ignored (intervals no longer use a bootstrap)",
+    )
+    parser.add_argument(
+        "--sentinels",
+        default=None,
+        help="Comma-separated missing-value codes (default: -999,-9999,-99.9)",
+    )
+    parser.add_argument(
+        "--no-regularise",
+        action="store_true",
+        help="Do not insert rows for timestamps absent from the file",
+    )
     parser.add_argument("--no-flags", action="store_true")
     parser.add_argument("--report", default=None, help="JSON report path")
     parser.add_argument("--quiet", action="store_true")
@@ -42,6 +59,22 @@ def main():
     args = parser.parse_args()
     if args.reanalysis and (args.lat is None or args.lon is None):
         parser.error("--reanalysis requires --lat and --lon")
+
+    sentinels = None
+    if args.sentinels is not None:
+        try:
+            sentinels = [float(v) for v in args.sentinels.split(",") if v.strip()]
+        except ValueError:
+            parser.error("--sentinels expects comma-separated numbers")
+
+    # Never write over the observations: the default name is derived from
+    # the stem, whatever the extension
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else input_path.with_name(
+        f"{input_path.stem}_filled{input_path.suffix or '.csv'}"
+    )
+    if output_path.resolve() == input_path.resolve():
+        parser.error("output path is the input file; choose another --output")
 
     def log(msg):
         if not args.quiet:
@@ -53,9 +86,16 @@ def main():
 
     # Load
     log(f"📤 Loading {args.input}...")
-    info = engine.load_csv(args.input, date_col=args.date_col)
+    info = engine.load_csv(
+        args.input,
+        date_col=args.date_col,
+        sentinels=sentinels,
+        regularise=not args.no_regularise,
+    )
     log(f"   {info['shape'][0]} records, {info['shape'][1]} columns")
     log(f"   Date range: {info['date_range']}")
+    if info["rows_inserted"]:
+        log(f"   {info['rows_inserted']} absent timestamps inserted as gaps")
 
     # Detect gaps
     log("\n🔍 Detecting gaps...")
@@ -71,12 +111,11 @@ def main():
         gr["missing_count"] for gr in result["gap_report"].values()
     )
     if total_missing == 0:
-        log("\n✅ No gaps detected!")
-        sys.exit(0)
+        log("\n✅ No gaps detected; the output is a copy of the input data.")
 
     # Reanalysis
     reanalysis_map = {}
-    if args.reanalysis and args.lat is not None and args.lon is not None:
+    if total_missing and args.reanalysis:
         log(f"\n🌐 Downloading reanalysis for ({args.lat}, {args.lon})...")
         try:
             from .reanalysis import get_open_meteo_data, suggest_reanalysis_mapping
@@ -104,13 +143,14 @@ def main():
 
     # Uncertainty
     if args.uncertainty:
-        log(f"\n📊 Uncertainty ({args.bootstrap_n} bootstrap)...")
-        engine.compute_uncertainty(n_bootstrap=args.bootstrap_n)
+        log("\n📊 Uncertainty (hold-out residual intervals)...")
+        if args.bootstrap_n is not None:
+            log("   --bootstrap-n is deprecated and ignored")
+        engine.compute_uncertainty()
 
     # Export
-    output_path = args.output or args.input.replace(".csv", "_filled.csv")
     log(f"\n📥 Exporting to {output_path}...")
-    export_df = engine.export(
+    engine.export(
         filepath=output_path,
         include_uncertainty=args.uncertainty,
         include_metadata=not args.no_flags,

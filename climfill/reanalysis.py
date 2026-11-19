@@ -1,28 +1,29 @@
 """
-Reanalysis data handler — Open-Meteo (free) and ERA5 (CDS API).
+Reanalysis data handler — daily series from the Open-Meteo archive API.
 """
 
-import numpy as np
 import pandas as pd
-import os
-import warnings
-
-warnings.filterwarnings("ignore")
 
 
-def get_open_meteo_data(lat, lon, start_date, end_date, variables=None):
+def get_open_meteo_data(lat, lon, start_date, end_date, variables=None,
+                        model="era5"):
     """
-    Download free weather data from Open-Meteo archive API.
+    Download daily reanalysis data from the Open-Meteo archive API.
     No API key needed.
 
     Parameters
     ----------
     lat, lon : float
-        Station coordinates
+        Station coordinates in decimal degrees (WGS 84, EPSG:4326)
     start_date, end_date : str
         Date range (YYYY-MM-DD)
     variables : list, optional
         Variables to fetch. Defaults to common climate vars.
+    model : str or None
+        Open-Meteo ``models`` value. The default ``"era5"`` requests ERA5
+        (0.25 degree grid), so that the series is the product named in the
+        documentation. ``None`` leaves the choice to Open-Meteo, which then
+        blends several products.
 
     Returns
     -------
@@ -54,6 +55,8 @@ def get_open_meteo_data(lat, lon, start_date, end_date, variables=None):
         "daily": ",".join(variables),
         "timezone": "auto",
     }
+    if model:
+        params["models"] = model
 
     response = requests.get(url, params=params, timeout=60)
     try:
@@ -134,18 +137,3 @@ def suggest_reanalysis_mapping(station_cols, reanalysis_cols):
                 break
     return mapping
 
-
-# ERA5 variable mapping
-ERA5_VARIABLE_MAP = {
-    "temperature": "2m_temperature",
-    "temp": "2m_temperature",
-    "tmax": "maximum_2m_temperature_since_previous_post_processing",
-    "tmin": "minimum_2m_temperature_since_previous_post_processing",
-    "precipitation": "total_precipitation",
-    "precip": "total_precipitation",
-    "humidity": "2m_dewpoint_temperature",
-    "wind_speed": "10m_u_component_of_wind",
-    "pressure": "surface_pressure",
-    "solar": "surface_solar_radiation_downwards",
-    "sst": "sea_surface_temperature",
-}

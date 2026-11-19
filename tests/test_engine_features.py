@@ -24,7 +24,7 @@ def _engine_from(df, **kwargs):
 def _station(n=200, seed=0, date_name="Date"):
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2021-01-01", periods=n, freq="D")
-    doy = dates.dayofyear.to_numpy()
+    doy = dates.day_of_year.to_numpy()
     temp = 25 + 5 * np.sin(2 * np.pi * doy / 365) + rng.normal(0, 0.5, n)
     return pd.DataFrame({
         date_name: dates,
@@ -137,7 +137,8 @@ def test_auto_fill_uses_mapped_reanalysis_for_long_gaps():
 
 def test_insert_missing_timestamps_adds_empty_rows():
     df = _station(n=30).drop(index=[5, 6, 20])
-    eng = _engine_from(df)
+    eng = _engine_from(df, regularise=False)
+    assert len(eng.df) == 27
     assert eng.insert_missing_timestamps() == 3
     assert len(eng.df) == 30
     assert eng.df["Temperature"].isna().sum() == 3
@@ -170,13 +171,13 @@ def test_uncertainty_progress_and_reset_on_refill():
     eng.fill_gaps(method="linear")
     calls = []
     first = eng.compute_uncertainty(
-        n_bootstrap=3, progress_callback=lambda *a: calls.append(a)
+        progress_callback=lambda *a: calls.append(a)
     )
     assert calls == [("Temperature", 1, 1)]
     first = first["Temperature"].copy()
     eng.fill_gaps(method="linear")
     assert eng.uncertainty_results == {}
-    second = eng.compute_uncertainty(n_bootstrap=3)["Temperature"]
+    second = eng.compute_uncertainty()["Temperature"]
     pd.testing.assert_frame_equal(first, second)
 
 
