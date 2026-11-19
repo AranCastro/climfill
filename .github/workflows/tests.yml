@@ -7,6 +7,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
 
     steps:
       - name: Checkout repository
@@ -15,16 +19,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
-      - name: Install package (editable)
-        run: pip install -e .
-
-      - name: Install test tools
-        run: pip install pytest pytest-cov
+      # [all] adds XGBoost, Streamlit and Plotly so the web-app tests run too
+      - name: Install package with all extras (editable)
+        run: pip install -e ".[all]"
 
       - name: Run tests
         run: pytest -v --cov=climfill --cov-report=term-missing

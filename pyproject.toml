@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "climfill"
-version = "1.0.0"
+version = "1.1.0"
 description = "Automated Climate Station Data Gap-Filler using ML and Reanalysis Data"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
-authors = [{name = "Aran"}]
+authors = [{name = "Aran Castro"}]
 keywords = ["climate", "gap-filling", "time-series", "meteorology", "reanalysis", "machine-learning"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -28,13 +28,13 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["xgboost>=1.7.0"]
-app = ["streamlit>=1.28.0", "plotly>=5.10.0"]
+app = ["streamlit>=1.51.0", "plotly>=5.10.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 all = ["climfill[ml,app,dev]"]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/climfill"
-Issues = "https://github.com/yourusername/climfill/issues"
+Homepage = "https://github.com/AranCastro/climfill"
+Issues = "https://github.com/AranCastro/climfill/issues"
 
 [project.scripts]
 climfill = "climfill.cli:main"
